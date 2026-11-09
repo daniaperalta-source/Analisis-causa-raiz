@@ -318,6 +318,8 @@ ul.plain li{margin:3px 0}
 .cp-pend{margin:0 0 14px;padding:10px 14px;background:var(--surface-2);border:1px solid var(--line);border-radius:3px;font-size:14px}
 .cp-pend ul{margin:6px 0 0;padding-left:20px}
 .doc-bar .v-act{gap:6px}
+.oc-bar{margin-top:18px}
+.oc-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -486,7 +488,7 @@ const RCAParser = (function(){
     r.equipo = oneLine(parts.slice(1).join(" - "));
     r.problema = oneLine(texts.slice(1).join(" "));
     const full = head + " " + r.problema;
-    r.unidad = guessUnit(full); r.pais = guessCountry(full);
+    r.unidad = guessUnit(full) || "Techoacero"; r.pais = guessCountry(full) || "Guatemala";
     const h = /(\d+(?:[.,]\d+)?)\s*(?:hrs?|horas)\b/i.exec(r.problema); r.horas = h ? parseFloat(h[1].replace(",",".")) : null;
     if (r.horas == null) w.push("No se encontraron horas de paro en la descripción.");
 
@@ -1795,17 +1797,31 @@ async function apiPost(body){
   const j = await r.json(); if (!j.ok) throw new Error(j.error || "Error de Google Sheets"); return j;
 }
 const BASE_IDS = new Set(); DB.meses.forEach(m => m.rcas.forEach(r => BASE_IDS.add(r.id)));
+const BASE_MESES = DB.meses.slice();
+const BASE_RCAS = {}; DB.meses.forEach(m => { BASE_RCAS[m.id] = m.rcas.slice(); });
+let OCULTOS = [];   // registros "oculto" guardados en Google Sheets: análisis o meses del consolidado eliminados
+/* los ACR de Bryan cargados antes de leer la unidad van a Techoacero Guatemala */
+function unidadPorDefecto(r){
+  if (r.persona === "bryan" && !r.unidadOk){ r.unidad = "Techoacero"; r.pais = "Guatemala"; }
+  if (!r.pais) r.pais = "Guatemala";
+}
 async function loadRemote(){
   if (!apiUrl()){ SYNC = {estado:"sin", hora:null, error:""}; renderSync(); return; }
   SYNC.estado = "cargando"; renderSync();
   try{
     const j = await apiGet({ action:"list" });
-    // quitar lo remoto anterior
-    DB.meses.forEach(m => { m.rcas = m.rcas.filter(r => BASE_IDS.has(r.id)); });
-    DB.meses = DB.meses.filter(m => m.base || m.rcas.length);
-    (j.meses || []).forEach(id => ensureMonth(id));
-    (j.rcas || []).forEach(r => { r.origen = "sheets"; corregir(r); ensureMonth(r.mes).rcas.push(r); });
-    REMOTE = { rcas: j.rcas || [], indicadores: j.indicadores || [] };
+    const todos = j.rcas || [];
+    OCULTOS = todos.filter(r => r.tipo === "oculto");
+    const oc = new Set(OCULTOS.map(r => r.oculta));
+    const reales = todos.filter(r => r.tipo !== "oculto");
+    // volver a armar: consolidado (sin lo eliminado) + Google Sheets
+    DB.meses = BASE_MESES.filter(m => !oc.has("mes:" + m.id));
+    DB.meses.forEach(m => { m.rcas = (BASE_RCAS[m.id] || []).filter(r => !oc.has(r.id)); });
+    const conReales = new Set(reales.map(r => r.mes));
+    (j.meses || []).forEach(id => { if (!oc.has("mes:" + id) || conReales.has(id)) ensureMonth(id); });
+    reales.forEach(r => { r.origen = "sheets"; corregir(r); unidadPorDefecto(r); ensureMonth(r.mes).rcas.push(r); });
+    sortMonths();
+    REMOTE = { rcas: reales, indicadores: j.indicadores || [] };
     SYNC = { estado:"ok", hora:new Date(), error:"" };
   }catch(e){ SYNC = { estado:"error", hora:null, error:String(e.message||e) }; }
   renderSync(); route();
@@ -1878,7 +1894,7 @@ function viewHome(){
     <p class="lede">Elige un mes y luego a la persona que elaboró el análisis. Cada RCA abre con su resumen, sus evidencias y el documento original.</p>
     <div class="tiles months">${tiles}${add}</div>
     ${EDIT ? connPanel() : ""}
-    <p class="foot">Multi · Mantenimiento. Agosto y septiembre vienen de los consolidados; los meses nuevos se guardan en Google Sheets con la foto completa de cada Excel. · Versión del 9 nov 2026, 09:15</p>`;
+    <p class="foot">Multi · Mantenimiento. Agosto y septiembre vienen de los consolidados; los meses nuevos se guardan en Google Sheets con la foto completa de cada Excel. · Versión del 9 nov 2026, 12:45</p>`;
 }
 function connPanel(){
   const u = apiUrl();
@@ -1946,7 +1962,7 @@ function viewMonth(mid){
       <span class="t-sub">Los cambios se guardan en Google Sheets y los ve todo el equipo.</span></div>` : "";
   $("#app").innerHTML = `
     <div class="v-top"><h1 class="h1">${esc(m.mes)} ${m.anio}</h1>
-      <div class="v-act">${backBtn("#/")}${EDIT && !m.base ? `<button class="btn del" type="button" onclick="deleteMonth('${mid}')">Eliminar mes</button>` : ""}</div></div>
+      <div class="v-act">${backBtn("#/")}${EDIT ? `<button class="btn del" type="button" onclick="deleteMonth('${mid}')">Eliminar mes</button>` : ""}</div></div>
     <p class="lede">${s.n ? `${s.n} análisis de causa raíz de ${s.units.length} ${s.units.length===1?"unidad":"unidades"}. Elige a quién quieres ver.` : "Este mes todavía no tiene análisis."}</p>
     ${tools}
     ${s.n ? `<div class="kpis">
@@ -2159,6 +2175,7 @@ function viewRca(mid,rid){
         <div class="tabs" role="tablist">${curDocs.map((d,k)=>`<button class="tab" role="tab" type="button" aria-selected="${k===0}" onclick="showDoc(${k})">${esc(d[0])}</button>`).join("")}</div>
         <div class="doc" id="doc" onclick="openLb()" title="Clic para ampliar"><img id="docImg" alt=""></div>
         <div class="doc-bar"><span>Documento original del consolidado</span><button class="btn" type="button" onclick="openLb()">Ampliar</button></div>
+        ${EDIT ? `<div class="danger"><button class="btn" type="button" onclick="deleteRca('${mid}','${r.id}')">Eliminar este análisis</button></div>` : ""}
       </div>`;
   } else {
     curDocs = inc ? inc.hojas.map(h => [h[0], h[1]]) : nhS ? (r.hojas || []).map(l => [l, null, ""]) : [];
@@ -2174,7 +2191,7 @@ function viewRca(mid,rid){
         <div class="doc-bar"><span>${nh ? "Formato original del Excel" : (r.archivo ? "Archivo: "+esc(r.archivo) : "")}</span>
           <span class="v-act">${nh ? `<button class="btn" type="button" id="ampBtn" onclick="openLb()">Ampliar</button>` : ""}${r.excelUrl ? `<a class="btn" href="${esc(r.excelUrl)}" target="_blank" rel="noopener">Abrir Excel original</a>` : ""}</span></div>
         ${miss}
-        ${EDIT ? `<div class="danger"><button class="btn" type="button" onclick="openCompletar('${mid}','${r.id}')">${nh ? "Volver a generar el formato" : "Agregar formato del Excel"}</button> <button class="btn" type="button" onclick="deleteRca('${mid}','${r.id}')">Eliminar este análisis</button></div>` : ""}
+        ${EDIT ? `<div class="danger"><button class="btn" type="button" onclick="openUnidad('${mid}','${r.id}')">Cambiar unidad y país</button> <button class="btn" type="button" onclick="openCompletar('${mid}','${r.id}')">${nh ? "Volver a generar el formato" : "Agregar formato del Excel"}</button> <button class="btn" type="button" onclick="deleteRca('${mid}','${r.id}')">Eliminar este análisis</button></div>` : ""}
       </div>`;
   }
   $("#app").innerHTML = `
@@ -2218,8 +2235,59 @@ async function loadImgs(r, incluido){
     const l = $("#docLoad"); if (l) l.textContent = "No se pudo cargar el formato del Excel: " + (e.message||e);
   }
 }
+function openUnidad(mid, id){
+  const r = month(mid).rcas.find(x => x.id === id); if (!r) return;
+  modal(`<h2>Unidad y país</h2>
+    <p class="m-p">${esc(r.titulo)}</p>
+    <div class="row2"><label class="fld"><span>Unidad</span><input id="unU" list="unidadesU" value="${esc(r.unidad||"")}"></label>
+    <label class="fld"><span>País</span><select id="unP">${["Guatemala","Costa Rica"].map(o=>`<option ${o===r.pais?"selected":""}>${o}</option>`).join("")}</select></label></div>
+    <datalist id="unidadesU">${["Techoacero","Mayacero","Tuboacero","Megacero","Galvacero","Decoacero","CD","Multi-Import"].map(u=>`<option value="${u}">`).join("")}</datalist>
+    <p class="m-err" id="unErr"></p>
+    <div class="m-act"><button class="btn" type="button" onclick="closeModal()">Cancelar</button><button class="btn pri" type="button" id="unOk">Guardar</button></div>`);
+  $("#unOk").onclick = async () => {
+    const u = $("#unU").value.trim(); if (!u){ $("#unErr").textContent = "Escribe la unidad."; return; }
+    const base = REMOTE.rcas.find(x => x.id === id); const rec = JSON.parse(JSON.stringify(base)); delete rec.origen;
+    rec.unidad = u; rec.pais = $("#unP").value; rec.unidadOk = true;
+    $("#unOk").disabled = true; $("#unOk").textContent = "Guardando…";
+    try{ await apiPost({ action:"saveRca", rca:rec }); closeModal(); await loadRemote(); }
+    catch(e){ $("#unErr").textContent = String(e.message||e); $("#unOk").disabled = false; $("#unOk").textContent = "Guardar"; }
+  };
+}
+function restoreBar(){
+  if (!EDIT || !OCULTOS.length) return;
+  const d = document.createElement("div"); d.className = "conn oc-bar";
+  d.innerHTML = `<div><b>Eliminados de los meses del consolidado (${OCULTOS.length})</b><div class="t-sub">${OCULTOS.map(o => esc(o.titulo.replace(/^Eliminado: /,""))).join(" · ")}</div></div>
+    <button class="btn" type="button" onclick="openRestaurar()">Restaurar</button>`;
+  const f = document.querySelector("#app .foot"); f ? f.before(d) : $("#app").append(d);
+}
+function openRestaurar(){
+  modal(`<h2>Restaurar eliminados</h2>
+    <p class="m-p">Estos análisis y meses vienen dentro del archivo; al restaurarlos vuelven a verse para todo el equipo.</p>
+    <div class="rv-list">${OCULTOS.map(o => `<div class="rv oc-row"><span>${esc(o.titulo.replace(/^Eliminado: /,""))}<span class="t-sub"> · ${o.oculta.startsWith("mes:") ? "mes completo" : "análisis"}</span></span>
+      <button class="btn sm" type="button" onclick="restaurar('${o.id}', this)">Restaurar</button></div>`).join("")}</div>
+    <div class="m-act"><button class="btn" type="button" onclick="closeModal()">Cerrar</button></div>`, true);
+}
+async function restaurar(id, b){
+  b.disabled = true; b.textContent = "Restaurando…";
+  try{ await apiPost({ action:"deleteRca", id }); closeModal(); await loadRemote(); }
+  catch(e){ alert("No se pudo restaurar: " + (e.message||e)); b.disabled = false; b.textContent = "Restaurar"; }
+}
+async function ocultar(clave, mes, titulo){
+  const id = "oc-" + clave.replace(/[^a-z0-9]/gi, "-");
+  await apiPost({ action:"saveRca", rca:{ id, mes, persona:"_oculto", tipo:"oculto", titulo:"Eliminado: " + titulo, oculta: clave, fecha: new Date().toISOString().slice(0,10) } });
+}
 async function deleteMonth(mid){
   const m = month(mid); const n = m.rcas.length;
+  if (m.base){
+    const remotos = m.rcas.filter(r => r.origen === "sheets").length;
+    if (!confirm(`¿Eliminar ${m.mes} ${m.anio} del dashboard? Deja de verse para todo el equipo${n ? ` junto con sus ${n} análisis` : ""}. Lo puedes restaurar desde el inicio con la edición activa.`)) return;
+    try{
+      await ocultar("mes:" + mid, mid, `${m.mes} ${m.anio}`);
+      for (const r of m.rcas.filter(r => r.origen === "sheets")) await apiPost({ action:"deleteRca", id:r.id });
+      go("#/"); await loadRemote();
+    }catch(e){ alert("No se pudo eliminar: " + (e.message||e)); }
+    return;
+  }
   const msg = n ? `¿Eliminar ${m.mes} ${m.anio}? También se borran sus ${n} análisis y fotos de Google Sheets para todo el equipo.` : `¿Eliminar ${m.mes} ${m.anio}?`;
   if (!confirm(msg)) return;
   try{
@@ -2232,6 +2300,13 @@ async function deleteMonth(mid){
   }
 }
 async function deleteRca(mid, id){
+  if (BASE_IDS.has(id)){
+    const r = month(mid).rcas.find(x => x.id === id);
+    if (!confirm(`¿Eliminar «${r ? r.titulo : "este análisis"}» del dashboard? Deja de verse para todo el equipo. Lo puedes restaurar desde el inicio con la edición activa.`)) return;
+    try{ await ocultar(id, mid, r ? r.titulo : id); go("#/m/"+mid); await loadRemote(); }
+    catch(e){ alert("No se pudo eliminar: " + (e.message||e)); }
+    return;
+  }
   if (!confirm("¿Eliminar este análisis del dashboard? Se borra de Google Sheets para todo el equipo.")) return;
   try{ await apiPost({ action:"deleteRca", id }); go("#/m/"+mid); await loadRemote(); }
   catch(e){ alert("No se pudo eliminar: " + (e.message||e)); }
@@ -2426,7 +2501,7 @@ async function saveUpload(){
       const fotos = it.fotos.filter(f=>f.on);
       const docs = (it.docs || []).filter(d=>d.on);
       r.id = r.id || ("r" + Date.now().toString(36) + Math.random().toString(36).slice(2,6));
-      r.mes = UP.mid; r.fotos = fotos.length; r.firmas = RCAParser.sigsOf(it.crudo);
+      r.mes = UP.mid; r.fotos = fotos.length; r.firmas = RCAParser.sigsOf(it.crudo); r.unidadOk = true;
       r.hojas = docs.map(d => d.label);
       delete r.hoja;
       await apiPost({ action:"saveRca", rca:r, limpiarImagenes:true });
@@ -2582,7 +2657,7 @@ function route(){
   if (h[0]==="m" && h[1] && h[2]==="p" && h[3]) return viewPerson(h[1],h[3]);
   if (h[0]==="m" && h[1] && h[2]==="r" && h[3]) return viewRca(h[1],h[3]);
   if (h[0]==="m" && h[1]) return viewMonth(h[1]);
-  viewHome();
+  viewHome(); restoreBar();
 }
 window.addEventListener("hashchange", ()=>{ closeLb(); route(); window.scrollTo(0,0); });
 if (EDIT){ $("#lockBtn").textContent = "Edición activa"; $("#lockBtn").classList.add("on"); }
