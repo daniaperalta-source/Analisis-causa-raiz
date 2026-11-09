@@ -319,6 +319,9 @@ ul.plain li{margin:3px 0}
 .cp-pend ul{margin:6px 0 0;padding-left:20px}
 .doc-bar .v-act{gap:6px}
 .oc-bar{margin-top:18px}
+button.chip-ed{cursor:pointer;background:var(--surface);border:1px dashed var(--ink-3,#666);color:inherit;font:inherit}
+button.chip-ed:hover{border-style:solid;border-color:var(--red);color:var(--red)}
+.fld .req{font-style:normal;color:var(--red);font-weight:600}
 .oc-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -488,7 +491,7 @@ const RCAParser = (function(){
     r.equipo = oneLine(parts.slice(1).join(" - "));
     r.problema = oneLine(texts.slice(1).join(" "));
     const full = head + " " + r.problema;
-    r.unidad = guessUnit(full) || "Techoacero"; r.pais = guessCountry(full) || "Guatemala";
+    r.unidad = guessUnit(full) || ""; r.pais = guessCountry(full) || "Guatemala";
     const h = /(\d+(?:[.,]\d+)?)\s*(?:hrs?|horas)\b/i.exec(r.problema); r.horas = h ? parseFloat(h[1].replace(",",".")) : null;
     if (r.horas == null) w.push("No se encontraron horas de paro en la descripción.");
 
@@ -1800,11 +1803,9 @@ const BASE_IDS = new Set(); DB.meses.forEach(m => m.rcas.forEach(r => BASE_IDS.a
 const BASE_MESES = DB.meses.slice();
 const BASE_RCAS = {}; DB.meses.forEach(m => { BASE_RCAS[m.id] = m.rcas.slice(); });
 let OCULTOS = [];   // registros "oculto" guardados en Google Sheets: análisis o meses del consolidado eliminados
-/* los ACR de Bryan cargados antes de leer la unidad van a Techoacero Guatemala */
-function unidadPorDefecto(r){
-  if (r.persona === "bryan" && !r.unidadOk){ r.unidad = "Techoacero"; r.pais = "Guatemala"; }
-  if (!r.pais) r.pais = "Guatemala";
-}
+let AJUSTES = [];   // cambios de unidad/país hechos a análisis del consolidado
+const BASE_ORIG = {}; DB.meses.forEach(m => m.rcas.forEach(r => { BASE_ORIG[r.id] = { unidad:r.unidad, pais:r.pais }; }));
+function unidadPorDefecto(r){ if (!r.pais) r.pais = "Guatemala"; }
 async function loadRemote(){
   if (!apiUrl()){ SYNC = {estado:"sin", hora:null, error:""}; renderSync(); return; }
   SYNC.estado = "cargando"; renderSync();
@@ -1812,11 +1813,13 @@ async function loadRemote(){
     const j = await apiGet({ action:"list" });
     const todos = j.rcas || [];
     OCULTOS = todos.filter(r => r.tipo === "oculto");
+    AJUSTES = todos.filter(r => r.tipo === "ajuste");
     const oc = new Set(OCULTOS.map(r => r.oculta));
-    const reales = todos.filter(r => r.tipo !== "oculto");
+    const reales = todos.filter(r => r.tipo !== "oculto" && r.tipo !== "ajuste");
     // volver a armar: consolidado (sin lo eliminado) + Google Sheets
     DB.meses = BASE_MESES.filter(m => !oc.has("mes:" + m.id));
     DB.meses.forEach(m => { m.rcas = (BASE_RCAS[m.id] || []).filter(r => !oc.has(r.id)); });
+    DB.meses.forEach(m => m.rcas.forEach(r => { Object.assign(r, BASE_ORIG[r.id]); const a = AJUSTES.find(x => x.ajusta === r.id); if (a){ r.unidad = a.unidad; r.pais = a.pais; } }));
     const conReales = new Set(reales.map(r => r.mes));
     (j.meses || []).forEach(id => { if (!oc.has("mes:" + id) || conReales.has(id)) ensureMonth(id); });
     reales.forEach(r => { r.origen = "sheets"; corregir(r); unidadPorDefecto(r); ensureMonth(r.mes).rcas.push(r); });
@@ -1894,7 +1897,7 @@ function viewHome(){
     <p class="lede">Elige un mes y luego a la persona que elaboró el análisis. Cada RCA abre con su resumen, sus evidencias y el documento original.</p>
     <div class="tiles months">${tiles}${add}</div>
     ${EDIT ? connPanel() : ""}
-    <p class="foot">Multi · Mantenimiento. Agosto y septiembre vienen de los consolidados; los meses nuevos se guardan en Google Sheets con la foto completa de cada Excel. · Versión del 9 nov 2026, 12:45</p>`;
+    <p class="foot">Multi · Mantenimiento. Agosto y septiembre vienen de los consolidados; los meses nuevos se guardan en Google Sheets con la foto completa de cada Excel. · Versión del 9 nov 2026, 12:55</p>`;
 }
 function connPanel(){
   const u = apiUrl();
@@ -1937,7 +1940,7 @@ function viewMonth(mid){
     const acc = rs.reduce((a,x)=>a+(x.acciones||[]).length,0);
     return `<div class="tile" role="button" tabindex="0" onclick="go('#/m/${mid}/p/${p.id}')" onkeydown="if(event.key==='Enter')go('#/m/${mid}/p/${p.id}')">
       <div class="p-head"><div class="mono">${p.ini}</div><div><div class="p-name">${esc(p.nombre)}</div><div class="p-role">${esc(p.rol)}</div></div></div>
-      <ul class="p-list">${rs.map(r=>`<li><span>${esc(r.titulo)}</span><span>${esc(r.unidad)}${r.pais==="Costa Rica"?" CR":""}</span></li>`).join("")}</ul>
+      <ul class="p-list">${rs.map(r=>`<li><span>${esc(r.titulo)}</span><span>${esc(r.unidad||"Sin unidad")}${r.pais==="Costa Rica"?" CR":""}</span></li>`).join("")}</ul>
       <div class="p-foot">
         <div class="stat"><b>${rs.length}</b><span>análisis</span></div>
         ${hrs ? `<div class="stat"><b>${nf1(hrs)} h</b><span>paro</span></div>` : `<div class="stat"><b>OEE</b><span>enfoque</span></div>`}
@@ -1950,7 +1953,7 @@ function viewMonth(mid){
     return `<tr class="link" tabindex="0" onclick="go('#/m/${mid}/r/${r.id}')" onkeydown="if(event.key==='Enter')go('#/m/${mid}/r/${r.id}')">
       <td class="num">${fdateShort(r.fecha)}</td>
       <td><div class="t-title">${esc(r.titulo)}</div><div class="t-sub">${esc(r.equipo)}</div></td>
-      <td>${esc(r.unidad)}<div class="t-sub">${esc(r.pais)}</div></td>
+      <td>${r.unidad ? esc(r.unidad) : `<span class="t-sub">Sin unidad</span>`}<div class="t-sub">${esc(r.pais)}</div></td>
       <td>${esc(person(r.persona).nombre)}</td>
       <td class="num">${esc(h[0])}<div class="t-sub">${esc(h[1])}</div></td>
       <td class="num">${(r.acciones||[]).length}</td></tr>`;
@@ -2191,13 +2194,13 @@ function viewRca(mid,rid){
         <div class="doc-bar"><span>${nh ? "Formato original del Excel" : (r.archivo ? "Archivo: "+esc(r.archivo) : "")}</span>
           <span class="v-act">${nh ? `<button class="btn" type="button" id="ampBtn" onclick="openLb()">Ampliar</button>` : ""}${r.excelUrl ? `<a class="btn" href="${esc(r.excelUrl)}" target="_blank" rel="noopener">Abrir Excel original</a>` : ""}</span></div>
         ${miss}
-        ${EDIT ? `<div class="danger"><button class="btn" type="button" onclick="openUnidad('${mid}','${r.id}')">Cambiar unidad y país</button> <button class="btn" type="button" onclick="openCompletar('${mid}','${r.id}')">${nh ? "Volver a generar el formato" : "Agregar formato del Excel"}</button> <button class="btn" type="button" onclick="deleteRca('${mid}','${r.id}')">Eliminar este análisis</button></div>` : ""}
+        ${EDIT ? `<div class="danger"><button class="btn" type="button" onclick="openCompletar('${mid}','${r.id}')">${nh ? "Volver a generar el formato" : "Agregar formato del Excel"}</button> <button class="btn" type="button" onclick="deleteRca('${mid}','${r.id}')">Eliminar este análisis</button></div>` : ""}
       </div>`;
   }
   $("#app").innerHTML = `
     <div class="d-top">
       <div><h1 class="h1">${esc(r.titulo)}</h1>
-        <div class="d-meta"><span class="chip ${r.pais==="Costa Rica"?"cr":""}">${esc(r.unidad||"Sin unidad")} · ${esc(r.pais||"")}</span>${r.equipo?`<span class="chip">${esc(r.equipo)}</span>`:""}<span class="chip">${fdate(r.fecha)}</span><span class="chip red">${esc(p.nombre)}</span></div></div>
+        <div class="d-meta"><span class="chip ${r.pais==="Costa Rica"?"cr":""}">${esc(r.unidad||"Sin unidad")} · ${esc(r.pais||"")}</span>${EDIT ? `<button class="chip chip-ed" type="button" onclick="openUnidad('${mid}','${r.id}')" title="Cambiar unidad y país">Editar unidad</button>` : ""}${r.equipo?`<span class="chip">${esc(r.equipo)}</span>`:""}<span class="chip">${fdate(r.fecha)}</span><span class="chip red">${esc(p.nombre)}</span></div></div>
       <div class="d-nav">
         ${backBtn(`#/m/${mid}/p/${p.id}`)}
         <a class="btn" href="${prev?`#/m/${mid}/r/${prev.id}`:"#"}" aria-disabled="${!prev}">Anterior</a>
@@ -2246,8 +2249,9 @@ function openUnidad(mid, id){
     <div class="m-act"><button class="btn" type="button" onclick="closeModal()">Cancelar</button><button class="btn pri" type="button" id="unOk">Guardar</button></div>`);
   $("#unOk").onclick = async () => {
     const u = $("#unU").value.trim(); if (!u){ $("#unErr").textContent = "Escribe la unidad."; return; }
-    const base = REMOTE.rcas.find(x => x.id === id); const rec = JSON.parse(JSON.stringify(base)); delete rec.origen;
-    rec.unidad = u; rec.pais = $("#unP").value; rec.unidadOk = true;
+    let rec;
+    if (BASE_IDS.has(id)) rec = { id:"aj-" + id.replace(/[^a-z0-9]/gi,"-"), mes:mid, persona:"_ajuste", tipo:"ajuste", titulo:"Unidad: " + r.titulo, ajusta:id, unidad:u, pais:$("#unP").value, fecha:new Date().toISOString().slice(0,10) };
+    else { const base = REMOTE.rcas.find(x => x.id === id); rec = JSON.parse(JSON.stringify(base)); delete rec.origen; rec.unidad = u; rec.pais = $("#unP").value; rec.unidadOk = true; }
     $("#unOk").disabled = true; $("#unOk").textContent = "Guardando…";
     try{ await apiPost({ action:"saveRca", rca:rec }); closeModal(); await loadRemote(); }
     catch(e){ $("#unErr").textContent = String(e.message||e); $("#unOk").disabled = false; $("#unOk").textContent = "Guardar"; }
@@ -2447,7 +2451,7 @@ function renderReview(){
       </div>
       <div class="row4">
         <label class="fld"><span>Equipo</span><input value="${esc(r.equipo)}" ${bind("equipo")}></label>
-        <label class="fld"><span>Unidad</span><input list="unidades" value="${esc(r.unidad)}" ${bind("unidad")}></label>
+        <label class="fld"><span>Unidad${r.unidad ? "" : ` <em class="req">· no venía en el Excel, elígela</em>`}</span><input list="unidades" value="${esc(r.unidad)}" placeholder="Tuboacero, Techoacero, Mayacero…" ${bind("unidad")}></label>
         <label class="fld"><span>País</span><select onchange="UP.items[${k}].rec.pais=this.value">${["Guatemala","Costa Rica"].map(o=>`<option ${o===r.pais?"selected":""}>${o}</option>`).join("")}</select></label>
         <label class="fld"><span>Fecha</span><input type="date" value="${esc(r.fecha)}" ${bind("fecha")}></label>
       </div>
